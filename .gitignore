@@ -1,0 +1,31 @@
+# Node
+node_modules
+dist
+npm-debug.log
+
+# NestJS
+library-service/node_modules
+library-service/dist
+library-service/.env
+
+# Go
+loans-service/.env
+loans-service/tmp
+loans-service/bin
+
+# Env
+.env
+.env.local
+.env.development
+.env.production
+
+# Logs
+*.log
+
+# OS / IDE
+.DS_Store
+.idea
+.vscode
+
+# Docker
+docker-data
