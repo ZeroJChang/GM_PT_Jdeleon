@@ -8,6 +8,7 @@ import { BooksModule } from './books/books.module';
 import { UsersModule } from './users/users.module';
 import { AuthModule } from './auth/auth.module';
 import { InternalModule } from './internal/internal.module';
+import { LoansModule } from './loans/loans.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { InternalModule } from './internal/internal.module';
     UsersModule,
     AuthModule,
     InternalModule,
+    LoansModule,
   ],
   controllers: [AppController],
   providers: [AppService],
