@@ -83,16 +83,17 @@ export class BooksService {
   async update(id: string, updateBookDto: UpdateBookDto) {
     const currentBook = await this.findOne(id);
 
+    const borrowedCopies =
+      currentBook.totalCopies - currentBook.availableCopies;
+
     if (
       updateBookDto.totalCopies !== undefined &&
-      updateBookDto.totalCopies < currentBook.totalCopies - currentBook.availableCopies
+      updateBookDto.totalCopies < borrowedCopies
     ) {
       throw new BadRequestException(
         'Total copies cannot be lower than borrowed copies',
       );
     }
-
-    const borrowedCopies = currentBook.totalCopies - currentBook.availableCopies;
 
     return this.prisma.book.update({
       where: { id },
@@ -115,5 +116,64 @@ export class BooksService {
     return {
       message: 'Book deleted successfully',
     };
+  }
+
+  async getInternalBook(id: string) {
+    const book = await this.findOne(id);
+
+    return {
+      id: book.id,
+      title: book.title,
+      author: book.author,
+      isbn: book.isbn,
+      year: book.year,
+      genre: book.genre,
+      totalCopies: book.totalCopies,
+      availableCopies: book.availableCopies,
+      isAvailable: book.availableCopies > 0,
+    };
+  }
+
+  async reserveCopy(id: string) {
+    await this.findOne(id);
+
+    const result = await this.prisma.book.updateMany({
+      where: {
+        id,
+        availableCopies: {
+          gt: 0,
+        },
+      },
+      data: {
+        availableCopies: {
+          decrement: 1,
+        },
+      },
+    });
+
+    if (result.count === 0) {
+      throw new BadRequestException('Book has no available copies');
+    }
+
+    return this.getInternalBook(id);
+  }
+
+  async releaseCopy(id: string) {
+    const book = await this.findOne(id);
+
+    if (book.availableCopies >= book.totalCopies) {
+      throw new BadRequestException('Book already has all copies available');
+    }
+
+    await this.prisma.book.update({
+      where: { id },
+      data: {
+        availableCopies: {
+          increment: 1,
+        },
+      },
+    });
+
+    return this.getInternalBook(id);
   }
 }
