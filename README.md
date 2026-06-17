@@ -1,2622 +1,1328 @@
-\# Library Technical Test
+# Prueba Técnica - Sistema de Biblioteca
 
+Sistema backend para una biblioteca implementado con dos servicios independientes:
 
+- **Servicio A - `library-service`**: API principal expuesta al cliente.
+- **Servicio B - `loans-service`**: servicio especializado en préstamos, implementado en Go.
 
-Backend technical test for a library system implemented with two independent services:
+El sistema permite autenticar usuarios, administrar libros, administrar usuarios, registrar préstamos, devolver préstamos, listar préstamos activos y consultar el histórico de préstamos.
 
+Los servicios se comunican por HTTP y cada servicio tiene su propia base de datos PostgreSQL.
 
+---
 
-\* \*\*Library Service\*\*: Main API exposed to the client.
+## Tabla de Contenido
 
-\* \*\*Loans Service\*\*: Dedicated loan management service implemented in Go.
+- [Arquitectura](#arquitectura)
+- [Stack Tecnológico](#stack-tecnológico)
+- [Estructura del Proyecto](#estructura-del-proyecto)
+- [Decisiones Técnicas](#decisiones-técnicas)
+- [Requisitos Cubiertos](#requisitos-cubiertos)
+- [Variables de Entorno](#variables-de-entorno)
+- [Ejecución con Docker](#ejecución-con-docker)
+- [Datos Demo](#datos-demo)
+- [Documentación de Endpoints](#documentación-de-endpoints)
+- [Flujo Principal](#flujo-principal)
+- [Pruebas](#pruebas)
+- [Comandos Útiles](#comandos-útiles)
+- [Solución de Problemas](#solución-de-problemas)
+- [Trade-offs](#trade-offs)
+- [Checklist de Entrega](#checklist-de-entrega)
 
+---
 
+## Arquitectura
 
-The system allows users to authenticate, manage books and users, register loans, return loans, list active loans, and view loan history. The services communicate through HTTP and each service owns its own PostgreSQL database.
-
-
-
-\---
-
-
-
-\## Table of Contents
-
-
-
-\* \[Architecture](#architecture)
-
-\* \[Technology Stack](#technology-stack)
-
-\* \[Project Structure](#project-structure)
-
-\* \[Main Decisions](#main-decisions)
-
-\* \[Requirements Covered](#requirements-covered)
-
-\* \[Environment Variables](#environment-variables)
-
-\* \[How to Run with Docker](#how-to-run-with-docker)
-
-\* \[Demo Data](#demo-data)
-
-\* \[API Documentation](#api-documentation)
-
-\* \[Main Flow](#main-flow)
-
-\* \[Tests](#tests)
-
-\* \[Useful Commands](#useful-commands)
-
-\* \[Troubleshooting](#troubleshooting)
-
-\* \[Trade-offs](#trade-offs)
-
-
-
-\---
-
-
-
-\## Architecture
-
-
-
-The solution is composed of two backend services and two independent PostgreSQL databases.
-
-
+La solución está compuesta por dos servicios backend y dos bases de datos PostgreSQL independientes.
 
 ```mermaid
-
 flowchart LR
+    Client["Cliente / Consumidor API"]
 
-&#x20;   Client\[Client / API Consumer]
+    subgraph ServiceA["Servicio A: library-service"]
+        Nest["NestJS API"]
+        Auth["Auth JWT + Roles"]
+        Books["Módulo Books"]
+        Users["Módulo Users"]
+        Internal["API Interna de Libros"]
+        LoansProxy["Módulo Loans / Cliente HTTP"]
+    end
 
+    subgraph DB1["library-db"]
+        UsersTable["Tabla users"]
+        BooksTable["Tabla books"]
+    end
 
+    subgraph ServiceB["Servicio B: loans-service"]
+        GoAPI["Go Chi API"]
+        LoanBusiness["Lógica de Préstamos"]
+        LibraryClient["Cliente HTTP hacia Library Service"]
+    end
 
-&#x20;   subgraph ServiceA\[Service A - library-service]
+    subgraph DB2["loans-db"]
+        LoansTable["Tabla loans"]
+    end
 
-&#x20;       Nest\[NestJS API]
+    Client --> Nest
+    Nest --> Auth
+    Nest --> Books
+    Nest --> Users
+    Nest --> LoansProxy
 
-&#x20;       Auth\[Auth JWT + Roles]
+    Books --> DB1
+    Users --> DB1
 
-&#x20;       Books\[Books Module]
-
-&#x20;       Users\[Users Module]
-
-&#x20;       Internal\[Internal Books API]
-
-&#x20;       LoansProxy\[Loans Module / HTTP Client]
-
-&#x20;   end
-
-
-
-&#x20;   subgraph DB1\[(library-db)]
-
-&#x20;       UsersTable\[users]
-
-&#x20;       BooksTable\[books]
-
-&#x20;   end
-
-
-
-&#x20;   subgraph ServiceB\[Service B - loans-service]
-
-&#x20;       GoAPI\[Go Chi API]
-
-&#x20;       LoanBusiness\[Loans Business Logic]
-
-&#x20;       LibraryClient\[HTTP Client to Library Service]
-
-&#x20;   end
-
-
-
-&#x20;   subgraph DB2\[(loans-db)]
-
-&#x20;       LoansTable\[loans]
-
-&#x20;   end
-
-
-
-&#x20;   Client --> Nest
-
-&#x20;   Nest --> Auth
-
-&#x20;   Nest --> Books
-
-&#x20;   Nest --> Users
-
-&#x20;   Nest --> LoansProxy
-
-
-
-&#x20;   Books --> DB1
-
-&#x20;   Users --> DB1
-
-
-
-&#x20;   LoansProxy -->|HTTP| GoAPI
-
-&#x20;   GoAPI --> LoanBusiness
-
-&#x20;   LoanBusiness --> DB2
-
-&#x20;   LoanBusiness --> LibraryClient
-
-&#x20;   LibraryClient -->|HTTP Internal API| Internal
-
-&#x20;   Internal --> DB1
-
+    LoansProxy -->|"HTTP"| GoAPI
+    GoAPI --> LoanBusiness
+    LoanBusiness --> DB2
+    LoanBusiness --> LibraryClient
+    LibraryClient -->|"HTTP API Interna"| Internal
+    Internal --> DB1
 ```
 
+---
 
+## Comunicación entre Servicios
 
-\---
+El cliente consume principalmente el servicio `library-service`.
 
-
-
-\## Service Communication
-
-
-
-The client communicates only with \*\*library-service\*\*.
-
-
-
-When a loan is created, the flow is:
-
-
+Cuando se registra un préstamo, el flujo es el siguiente:
 
 ```mermaid
-
 sequenceDiagram
+    participant Client as Cliente
+    participant Library as library-service
+    participant Loans as loans-service
+    participant DBLoans as loans-db
+    participant DBLibrary as library-db
 
-&#x20;   participant Client
-
-&#x20;   participant Library as library-service
-
-&#x20;   participant Loans as loans-service
-
-&#x20;   participant DBLoans as loans-db
-
-&#x20;   participant DBLibrary as library-db
-
-
-
-&#x20;   Client->>Library: POST /loans with JWT
-
-&#x20;   Library->>Loans: POST /loans
-
-&#x20;   Loans->>Library: POST /internal/books/:id/reserve
-
-&#x20;   Library->>DBLibrary: Decrease availableCopies
-
-&#x20;   Library-->>Loans: Book reserved
-
-&#x20;   Loans->>DBLoans: Create ACTIVE loan
-
-&#x20;   Loans-->>Library: Loan created
-
-&#x20;   Library-->>Client: 201 Created
-
+    Client->>Library: POST /loans con JWT
+    Library->>Loans: POST /loans
+    Loans->>Library: POST /internal/books/:id/reserve
+    Library->>DBLibrary: Disminuye availableCopies
+    Library-->>Loans: Libro reservado
+    Loans->>DBLoans: Crea préstamo ACTIVE
+    Loans-->>Library: Préstamo creado
+    Library-->>Client: 201 Created
 ```
 
-
-
-When a loan is returned:
-
-
+Cuando se devuelve un préstamo:
 
 ```mermaid
-
 sequenceDiagram
+    participant Client as Cliente
+    participant Library as library-service
+    participant Loans as loans-service
+    participant DBLoans as loans-db
+    participant DBLibrary as library-db
 
-&#x20;   participant Client
-
-&#x20;   participant Library as library-service
-
-&#x20;   participant Loans as loans-service
-
-&#x20;   participant DBLoans as loans-db
-
-&#x20;   participant DBLibrary as library-db
-
-
-
-&#x20;   Client->>Library: POST /loans/:id/return with JWT
-
-&#x20;   Library->>Loans: POST /loans/:id/return
-
-&#x20;   Loans->>DBLoans: Mark loan as RETURNED
-
-&#x20;   Loans->>Library: POST /internal/books/:id/release
-
-&#x20;   Library->>DBLibrary: Increase availableCopies
-
-&#x20;   Loans-->>Library: Loan returned
-
-&#x20;   Library-->>Client: 200 OK
-
+    Client->>Library: POST /loans/:id/return con JWT
+    Library->>Loans: POST /loans/:id/return
+    Loans->>DBLoans: Marca préstamo como RETURNED
+    Loans->>Library: POST /internal/books/:id/release
+    Library->>DBLibrary: Aumenta availableCopies
+    Loans-->>Library: Préstamo devuelto
+    Library-->>Client: 200 OK
 ```
 
+---
 
+## Stack Tecnológico
 
-\---
+### Servicio A: `library-service`
 
+- Node.js
+- NestJS
+- Prisma ORM
+- PostgreSQL
+- JWT
+- Roles `ADMIN` / `USER`
+- Class Validator
+- Docker
 
+### Servicio B: `loans-service`
 
-\## Technology Stack
+- Go
+- Chi Router
+- PostgreSQL
+- `database/sql`
+- `pgx`
+- Docker
 
+### Infraestructura
 
+- Docker Compose
+- Dos bases de datos PostgreSQL
+- Contenedores independientes por servicio
 
-\### Service A: `library-service`
+---
 
-
-
-\* Node.js
-
-\* NestJS
-
-\* Prisma ORM
-
-\* PostgreSQL
-
-\* JWT authentication
-
-\* Role-based authorization
-
-\* Class Validator
-
-\* Docker
-
-
-
-\### Service B: `loans-service`
-
-
-
-\* Go
-
-\* Chi router
-
-\* PostgreSQL
-
-\* `database/sql`
-
-\* `pgx` driver
-
-\* Docker
-
-
-
-\### Infrastructure
-
-
-
-\* Docker Compose
-
-\* Two PostgreSQL databases
-
-\* Independent containers per service
-
-
-
-\---
-
-
-
-\## Project Structure
-
-
+## Estructura del Proyecto
 
 ```text
-
 library-technical-test/
+  docker-compose.yml
+  README.md
+  .gitignore
 
-&#x20; docker-compose.yml
+  library-service/
+    Dockerfile
+    .dockerignore
+    .env.example
+    prisma/
+      schema.prisma
+      seed.cjs
+      migrations/
+    src/
+      auth/
+      books/
+      database/
+      internal/
+      loans/
+      users/
 
-&#x20; README.md
-
-&#x20; .gitignore
-
-
-
-&#x20; library-service/
-
-&#x20;   Dockerfile
-
-&#x20;   .dockerignore
-
-&#x20;   .env.example
-
-&#x20;   prisma/
-
-&#x20;     schema.prisma
-
-&#x20;     seed.cjs
-
-&#x20;     migrations/
-
-&#x20;   src/
-
-&#x20;     auth/
-
-&#x20;     books/
-
-&#x20;     database/
-
-&#x20;     internal/
-
-&#x20;     loans/
-
-&#x20;     users/
-
-
-
-&#x20; loans-service/
-
-&#x20;   Dockerfile
-
-&#x20;   .dockerignore
-
-&#x20;   .env.example
-
-&#x20;   go.mod
-
-&#x20;   go.sum
-
-&#x20;   cmd/
-
-&#x20;     server/
-
-&#x20;       main.go
-
-&#x20;   migrations/
-
-&#x20;     001\_init.sql
-
-&#x20;   internal/
-
-&#x20;     loans/
-
-&#x20;     platform/
-
-&#x20;       database/
-
-&#x20;       httpclient/
-
+  loans-service/
+    Dockerfile
+    .dockerignore
+    .env.example
+    go.mod
+    go.sum
+    cmd/
+      server/
+        main.go
+    migrations/
+      001_init.sql
+    internal/
+      loans/
+      platform/
+        database/
+        httpclient/
 ```
 
+---
 
+## Decisiones Técnicas
 
-\---
+### 1. `library-service` como API principal
 
+El cliente consume `library-service`, ya que este servicio centraliza:
 
+- autenticación,
+- autorización,
+- usuarios,
+- libros,
+- entrada al flujo de préstamos.
 
-\## Main Decisions
+Los endpoints de préstamos en `library-service` funcionan como una capa de entrada que llama internamente a `loans-service`.
 
+### 2. Bases de datos independientes
 
+Cada servicio tiene su propia base de datos:
 
-\### 1. Library Service as the main public API
+- `library-db`: almacena usuarios y libros.
+- `loans-db`: almacena préstamos.
 
+Esto evita que un servicio acceda directamente a la base de datos del otro y mantiene una separación clara de responsabilidades.
 
+### 3. Comunicación HTTP entre servicios
 
-The client interacts with `library-service`. This service exposes authentication, users, books, and loan endpoints.
+Los servicios se comunican mediante REST sobre HTTP.
 
+- `library-service` llama a `loans-service` para registrar y devolver préstamos.
+- `loans-service` llama a endpoints internos de `library-service` para reservar o liberar copias de libros.
 
+### 4. Protección de endpoints internos
 
-The loan endpoints in `library-service` act as a gateway to `loans-service`.
-
-
-
-\### 2. Independent databases
-
-
-
-Each service owns its data:
-
-
-
-\* `library-db` stores users and books.
-
-\* `loans-db` stores loans.
-
-
-
-This avoids direct database coupling between services.
-
-
-
-\### 3. HTTP communication between services
-
-
-
-The services communicate through REST over HTTP.
-
-
-
-\* `library-service` calls `loans-service` to register and return loans.
-
-\* `loans-service` calls internal endpoints from `library-service` to reserve or release book copies.
-
-
-
-\### 4. Internal API key
-
-
-
-Internal endpoints are protected using:
-
-
+Los endpoints internos de `library-service` se protegen usando el header:
 
 ```http
-
-x-internal-api-key: local\_internal\_key
-
+x-internal-api-key: local_internal_key
 ```
 
+Esto evita que un cliente externo reserve o libere copias directamente sin pasar por el flujo correcto de préstamos.
 
+### 5. Compensación en lugar de transacciones distribuidas
 
-This prevents regular clients from directly reserving or releasing book copies without authorization.
+Como existen dos bases de datos independientes, no se implementó una transacción distribuida.
 
+En su lugar, se usa una estrategia de compensación:
 
+1. `loans-service` reserva una copia del libro llamando a `library-service`.
+2. Luego intenta crear el préstamo en `loans-db`.
+3. Si falla la creación del préstamo, `loans-service` llama a `release` para devolver la copia reservada.
 
-\### 5. Compensation instead of distributed transactions
+---
 
+## Requisitos Cubiertos
 
+- CRUD de libros.
+- CRUD de usuarios.
+- Autenticación JWT.
+- Roles `ADMIN` y `USER`.
+- Filtros y paginación de libros.
+- Registro de préstamos.
+- Devolución de préstamos.
+- Listado de préstamos activos por usuario.
+- Listado de histórico de préstamos.
+- Comunicación HTTP entre servicios.
+- Persistencia independiente por servicio.
+- Docker Compose para levantar servicios y bases de datos.
+- Seed automático para datos demo.
+- Tests unitarios para ambos servicios.
+- Documentación de arquitectura, endpoints, decisiones y flujo completo.
 
-There is no distributed transaction between the two databases.
+---
 
+## Variables de Entorno
 
-
-If `loans-service` reserves a book but fails to create the loan, it calls `release` in `library-service` as a compensation mechanism.
-
-
-
-\---
-
-
-
-\## Requirements Covered
-
-
-
-\* Books CRUD.
-
-\* Users CRUD.
-
-\* JWT authentication.
-
-\* Roles: `ADMIN` and `USER`.
-
-\* Book filters and pagination.
-
-\* Register loans.
-
-\* Return loans.
-
-\* List active loans by user.
-
-\* List loan history.
-
-\* HTTP communication between services.
-
-\* Independent persistence per service.
-
-\* Docker Compose for both services and databases.
-
-\* Seed data for easy evaluation.
-
-\* Unit tests for both services.
-
-\* README documentation with architecture, flow, endpoints, decisions and execution instructions.
-
-
-
-\---
-
-
-
-\## Environment Variables
-
-
-
-\### `library-service/.env.example`
-
-
+### `library-service/.env.example`
 
 ```env
-
 PORT=3000
-
-DATABASE\_URL=postgresql://postgres:postgres@localhost:5433/library\_db?schema=public
-
-JWT\_SECRET=local\_super\_secret\_key
-
-JWT\_EXPIRES\_IN=1d
-
-LOANS\_SERVICE\_URL=http://localhost:8080
-
-INTERNAL\_API\_KEY=local\_internal\_key
-
+DATABASE_URL=postgresql://postgres:postgres@localhost:5433/library_db?schema=public
+JWT_SECRET=local_super_secret_key
+JWT_EXPIRES_IN=1d
+LOANS_SERVICE_URL=http://localhost:8080
+INTERNAL_API_KEY=local_internal_key
 ```
 
-
-
-\### `loans-service/.env.example`
-
-
+### `loans-service/.env.example`
 
 ```env
-
 PORT=8080
-
-DATABASE\_URL=postgres://postgres:postgres@localhost:5434/loans\_db?sslmode=disable
-
-LIBRARY\_SERVICE\_URL=http://localhost:3000
-
-INTERNAL\_API\_KEY=local\_internal\_key
-
+DATABASE_URL=postgres://postgres:postgres@localhost:5434/loans_db?sslmode=disable
+LIBRARY_SERVICE_URL=http://localhost:3000
+INTERNAL_API_KEY=local_internal_key
 ```
 
+Cuando se ejecuta con Docker Compose, estas variables ya están configuradas dentro de `docker-compose.yml`.
 
+---
 
-When running with Docker Compose, the environment variables are already defined in `docker-compose.yml`.
+## Ejecución con Docker
 
+### Requisitos previos
 
+- Docker Desktop instalado.
+- Docker Compose disponible.
+- Puertos disponibles:
+  - `3000`
+  - `8080`
+  - `5433`
+  - `5434`
 
-\---
+### Levantar todo el sistema
 
-
-
-\## How to Run with Docker
-
-
-
-\### Prerequisites
-
-
-
-\* Docker Desktop installed.
-
-\* Docker Compose available.
-
-\* Ports `3000`, `8080`, `5433`, and `5434` available.
-
-
-
-\### Run the full system
-
-
-
-From the root folder:
-
-
+Desde la raíz del proyecto:
 
 ```powershell
-
 docker compose up --build
-
 ```
 
+Este comando levanta:
 
+- `library-service`
+- `loans-service`
+- `library-db`
+- `loans-db`
 
-This command starts:
-
-
-
-\* `library-service`
-
-\* `loans-service`
-
-\* `library-db`
-
-\* `loans-db`
-
-
-
-The `library-service` container runs automatically:
-
-
+El contenedor de `library-service` ejecuta automáticamente:
 
 ```text
-
 npx prisma migrate deploy
-
 npm run seed
-
 node dist/src/main.js
-
 ```
 
+Esto significa que:
 
+1. se aplican las migraciones,
+2. se crean datos demo,
+3. se levanta la API de NestJS.
 
-This means the database schema is applied and demo data is created automatically.
+### Validar servicios
 
-
-
-\### Validate services
-
-
-
-Open another terminal and run:
-
-
+En otra terminal:
 
 ```powershell
-
 Invoke-RestMethod -Uri "http://localhost:3000" -Method GET
-
 ```
 
-
-
-Expected response:
-
-
+Respuesta esperada:
 
 ```text
-
 Hello World!
-
 ```
 
-
-
-Validate Go service health:
-
-
+Validar el servicio Go:
 
 ```powershell
-
 Invoke-RestMethod -Uri "http://localhost:8080/health" -Method GET
-
 ```
 
-
-
-Expected response:
-
-
+Respuesta esperada:
 
 ```json
-
 {
-
-&#x20; "status": "ok",
-
-&#x20; "service": "loans-service",
-
-&#x20; "database": "ok"
-
+  "status": "ok",
+  "service": "loans-service",
+  "database": "ok"
 }
-
 ```
 
+---
 
+## Datos Demo
 
-\---
+El seed crea automáticamente los siguientes datos:
 
-
-
-\## Demo Data
-
-
-
-The seed automatically creates:
-
-
-
-\### Admin User
-
-
+### Usuario Administrador
 
 ```text
-
 Email: admin@test.com
-
 Password: 123456
-
 Role: ADMIN
-
 ```
 
-
-
-\### Normal User
-
-
+### Usuario Normal
 
 ```text
-
 Email: user@test.com
-
 Password: 123456
-
 Role: USER
-
 ```
 
-
-
-\### Demo Book
-
-
+### Libro Demo
 
 ```text
-
+ID: 117f2aaf-61ab-4b49-b34a-7b331f6947a8
 Title: Clean Code
-
 Author: Robert C. Martin
-
 ISBN: 9780132350884
-
 Year: 2008
-
 Genre: Software Engineering
-
 Total copies: 5
-
 Available copies: 5
-
 ```
 
+---
 
+# Documentación de Endpoints
 
-\---
-
-
-
-\# API Documentation
-
-
-
-Base URL for the main public API:
-
-
+URL base del servicio principal:
 
 ```text
-
 http://localhost:3000
-
 ```
 
-
-
-Base URL for the loans service:
-
-
+URL base del servicio de préstamos:
 
 ```text
-
 http://localhost:8080
-
 ```
 
+El cliente debe consumir principalmente `library-service`.
 
+---
 
-The client should normally consume only `library-service`.
+## Autenticación
 
-
-
-\---
-
-
-
-\## Authentication
-
-
-
-\### Login
-
-
+### Login
 
 ```http
-
 POST /auth/login
-
 ```
-
-
 
 Request:
 
-
-
 ```json
-
 {
-
-&#x20; "email": "admin@test.com",
-
-&#x20; "password": "123456"
-
+  "email": "admin@test.com",
+  "password": "123456"
 }
-
 ```
-
-
 
 Response:
 
-
-
 ```json
-
 {
-
-&#x20; "accessToken": "jwt\_token\_here",
-
-&#x20; "user": {
-
-&#x20;   "id": "e11067e4-7927-442b-89ea-533cf5564609",
-
-&#x20;   "name": "Admin User",
-
-&#x20;   "email": "admin@test.com",
-
-&#x20;   "role": "ADMIN"
-
-&#x20; }
-
+  "accessToken": "jwt_token_here",
+  "user": {
+    "id": "e11067e4-7927-442b-89ea-533cf5564609",
+    "name": "Admin User",
+    "email": "admin@test.com",
+    "role": "ADMIN"
+  }
 }
-
 ```
 
-
-
-PowerShell example:
-
-
+Ejemplo en PowerShell:
 
 ```powershell
-
 $adminResponse = Invoke-RestMethod `
-
-&#x20; -Uri "http://localhost:3000/auth/login" `
-
-&#x20; -Method POST `
-
-&#x20; -ContentType "application/json" `
-
-&#x20; -Body '{
-
-&#x20;   "email": "admin@test.com",
-
-&#x20;   "password": "123456"
-
-&#x20; }'
-
-
+  -Uri "http://localhost:3000/auth/login" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body '{
+    "email": "admin@test.com",
+    "password": "123456"
+  }'
 
 $adminToken = $adminResponse.accessToken
-
 ```
 
+---
 
+## Endpoints de Libros
 
-\---
+### Crear Libro
 
-
-
-\## Books Endpoints
-
-
-
-\### Create Book
-
-
-
-Requires role: `ADMIN`
-
-
+Requiere rol: `ADMIN`
 
 ```http
-
 POST /books
-
 ```
-
-
 
 Request:
 
-
-
 ```json
-
 {
-
-&#x20; "title": "Clean Architecture",
-
-&#x20; "author": "Robert C. Martin",
-
-&#x20; "isbn": "9780134494166",
-
-&#x20; "year": 2017,
-
-&#x20; "genre": "Software Engineering",
-
-&#x20; "totalCopies": 3
-
+  "title": "Clean Architecture",
+  "author": "Robert C. Martin",
+  "isbn": "9780134494166",
+  "year": 2017,
+  "genre": "Software Engineering",
+  "totalCopies": 3
 }
-
 ```
-
-
 
 Response:
 
-
-
 ```json
-
 {
-
-&#x20; "id": "book-uuid",
-
-&#x20; "title": "Clean Architecture",
-
-&#x20; "author": "Robert C. Martin",
-
-&#x20; "isbn": "9780134494166",
-
-&#x20; "year": 2017,
-
-&#x20; "genre": "Software Engineering",
-
-&#x20; "totalCopies": 3,
-
-&#x20; "availableCopies": 3,
-
-&#x20; "createdAt": "2026-06-17T00:00:00.000Z",
-
-&#x20; "updatedAt": "2026-06-17T00:00:00.000Z"
-
+  "id": "book-uuid",
+  "title": "Clean Architecture",
+  "author": "Robert C. Martin",
+  "isbn": "9780134494166",
+  "year": 2017,
+  "genre": "Software Engineering",
+  "totalCopies": 3,
+  "availableCopies": 3,
+  "createdAt": "2026-06-17T00:00:00.000Z",
+  "updatedAt": "2026-06-17T00:00:00.000Z"
 }
-
 ```
 
-
-
-PowerShell:
-
-
+Ejemplo:
 
 ```powershell
-
 Invoke-RestMethod `
-
-&#x20; -Uri "http://localhost:3000/books" `
-
-&#x20; -Method POST `
-
-&#x20; -ContentType "application/json" `
-
-&#x20; -Headers @{ Authorization = "Bearer $adminToken" } `
-
-&#x20; -Body '{
-
-&#x20;   "title": "Clean Architecture",
-
-&#x20;   "author": "Robert C. Martin",
-
-&#x20;   "isbn": "9780134494166",
-
-&#x20;   "year": 2017,
-
-&#x20;   "genre": "Software Engineering",
-
-&#x20;   "totalCopies": 3
-
-&#x20; }'
-
+  -Uri "http://localhost:3000/books" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Headers @{ Authorization = "Bearer $adminToken" } `
+  -Body '{
+    "title": "Clean Architecture",
+    "author": "Robert C. Martin",
+    "isbn": "9780134494166",
+    "year": 2017,
+    "genre": "Software Engineering",
+    "totalCopies": 3
+  }'
 ```
 
+### Listar Libros
 
-
-\---
-
-
-
-\### List Books
-
-
-
-Requires authentication.
-
-
+Requiere autenticación.
 
 ```http
-
 GET /books
-
 ```
 
+Query params disponibles:
 
+| Nombre | Tipo | Requerido | Descripción |
+|---|---:|---:|---|
+| `author` | string | No | Filtra por autor |
+| `genre` | string | No | Filtra por género |
+| `available` | boolean | No | Filtra libros disponibles o no disponibles |
+| `page` | number | No | Número de página |
+| `limit` | number | No | Cantidad de registros por página |
 
-Query parameters:
-
-
-
-| Name        |    Type | Required | Description                           |
-
-| ----------- | ------: | -------: | ------------------------------------- |
-
-| `author`    |  string |       No | Filter by author                      |
-
-| `genre`     |  string |       No | Filter by genre                       |
-
-| `available` | boolean |       No | Filter available or unavailable books |
-
-| `page`      |  number |       No | Page number                           |
-
-| `limit`     |  number |       No | Items per page                        |
-
-
-
-Example:
-
-
+Ejemplo:
 
 ```http
-
-GET /books?author=Robert\&available=true\&page=1\&limit=10
-
+GET /books?author=Robert&available=true&page=1&limit=10
 ```
-
-
 
 Response:
 
-
-
 ```json
-
 {
-
-&#x20; "items": \[
-
-&#x20;   {
-
-&#x20;     "id": "117f2aaf-61ab-4b49-b34a-7b331f6947a8",
-
-&#x20;     "title": "Clean Code",
-
-&#x20;     "author": "Robert C. Martin",
-
-&#x20;     "isbn": "9780132350884",
-
-&#x20;     "year": 2008,
-
-&#x20;     "genre": "Software Engineering",
-
-&#x20;     "totalCopies": 5,
-
-&#x20;     "availableCopies": 5
-
-&#x20;   }
-
-&#x20; ],
-
-&#x20; "meta": {
-
-&#x20;   "total": 1,
-
-&#x20;   "page": 1,
-
-&#x20;   "limit": 10,
-
-&#x20;   "totalPages": 1
-
-&#x20; }
-
+  "items": [
+    {
+      "id": "117f2aaf-61ab-4b49-b34a-7b331f6947a8",
+      "title": "Clean Code",
+      "author": "Robert C. Martin",
+      "isbn": "9780132350884",
+      "year": 2008,
+      "genre": "Software Engineering",
+      "totalCopies": 5,
+      "availableCopies": 5
+    }
+  ],
+  "meta": {
+    "total": 1,
+    "page": 1,
+    "limit": 10,
+    "totalPages": 1
+  }
 }
-
 ```
 
-
-
-PowerShell:
-
-
+Ejemplo:
 
 ```powershell
-
 Invoke-RestMethod `
-
-&#x20; -Uri "http://localhost:3000/books" `
-
-&#x20; -Method GET `
-
-&#x20; -Headers @{ Authorization = "Bearer $adminToken" }
-
+  -Uri "http://localhost:3000/books" `
+  -Method GET `
+  -Headers @{ Authorization = "Bearer $adminToken" }
 ```
 
+### Obtener Libro por ID
 
-
-\---
-
-
-
-\### Get Book by ID
-
-
-
-Requires authentication.
-
-
+Requiere autenticación.
 
 ```http
-
 GET /books/:id
-
 ```
 
-
-
-Example:
-
-
+Ejemplo:
 
 ```powershell
-
 Invoke-RestMethod `
-
-&#x20; -Uri "http://localhost:3000/books/117f2aaf-61ab-4b49-b34a-7b331f6947a8" `
-
-&#x20; -Method GET `
-
-&#x20; -Headers @{ Authorization = "Bearer $adminToken" }
-
+  -Uri "http://localhost:3000/books/117f2aaf-61ab-4b49-b34a-7b331f6947a8" `
+  -Method GET `
+  -Headers @{ Authorization = "Bearer $adminToken" }
 ```
 
+### Actualizar Libro
 
-
-\---
-
-
-
-\### Update Book
-
-
-
-Requires role: `ADMIN`
-
-
+Requiere rol: `ADMIN`
 
 ```http
-
 PATCH /books/:id
-
 ```
-
-
 
 Request:
 
-
-
 ```json
-
 {
-
-&#x20; "title": "Updated title",
-
-&#x20; "totalCopies": 10
-
+  "title": "Updated title",
+  "totalCopies": 10
 }
-
 ```
 
+### Eliminar Libro
 
-
-\---
-
-
-
-\### Delete Book
-
-
-
-Requires role: `ADMIN`
-
-
+Requiere rol: `ADMIN`
 
 ```http
-
 DELETE /books/:id
-
 ```
-
-
 
 Response:
 
-
-
 ```json
-
 {
-
-&#x20; "message": "Book deleted successfully"
-
+  "message": "Book deleted successfully"
 }
-
 ```
 
+---
 
+## Endpoints de Usuarios
 
-\---
+Todos los endpoints de usuarios requieren rol `ADMIN`.
 
-
-
-\## Users Endpoints
-
-
-
-All users endpoints require role: `ADMIN`.
-
-
-
-\### Create User
-
-
+### Crear Usuario
 
 ```http
-
 POST /users
-
 ```
-
-
 
 Request:
 
-
-
 ```json
-
 {
-
-&#x20; "name": "Normal User",
-
-&#x20; "email": "user@test.com",
-
-&#x20; "password": "123456",
-
-&#x20; "role": "USER"
-
+  "name": "Normal User",
+  "email": "user@test.com",
+  "password": "123456",
+  "role": "USER"
 }
-
 ```
-
-
 
 Response:
 
-
-
 ```json
-
 {
-
-&#x20; "id": "user-uuid",
-
-&#x20; "name": "Normal User",
-
-&#x20; "email": "user@test.com",
-
-&#x20; "role": "USER",
-
-&#x20; "createdAt": "2026-06-17T00:00:00.000Z",
-
-&#x20; "updatedAt": "2026-06-17T00:00:00.000Z"
-
+  "id": "user-uuid",
+  "name": "Normal User",
+  "email": "user@test.com",
+  "role": "USER",
+  "createdAt": "2026-06-17T00:00:00.000Z",
+  "updatedAt": "2026-06-17T00:00:00.000Z"
 }
-
 ```
 
+La contraseña nunca se retorna en la respuesta.
 
-
-The password hash is never returned.
-
-
-
-\---
-
-
-
-\### List Users
-
-
+### Listar Usuarios
 
 ```http
-
 GET /users
-
 ```
 
-
-
-PowerShell:
-
-
+Ejemplo:
 
 ```powershell
-
 Invoke-RestMethod `
-
-&#x20; -Uri "http://localhost:3000/users" `
-
-&#x20; -Method GET `
-
-&#x20; -Headers @{ Authorization = "Bearer $adminToken" }
-
+  -Uri "http://localhost:3000/users" `
+  -Method GET `
+  -Headers @{ Authorization = "Bearer $adminToken" }
 ```
 
-
-
-\---
-
-
-
-\### Get User by ID
-
-
+### Obtener Usuario por ID
 
 ```http
-
 GET /users/:id
-
 ```
 
-
-
-\---
-
-
-
-\### Update User
-
-
+### Actualizar Usuario
 
 ```http
-
 PATCH /users/:id
-
 ```
-
-
 
 Request:
 
-
-
 ```json
-
 {
-
-&#x20; "name": "Updated User",
-
-&#x20; "role": "ADMIN"
-
+  "name": "Updated User",
+  "role": "ADMIN"
 }
-
 ```
 
-
-
-\---
-
-
-
-\### Delete User
-
-
+### Eliminar Usuario
 
 ```http
-
 DELETE /users/:id
-
 ```
-
-
 
 Response:
 
-
-
 ```json
-
 {
-
-&#x20; "message": "User deleted successfully"
-
+  "message": "User deleted successfully"
 }
-
 ```
 
+---
 
+## Endpoints de Préstamos desde `library-service`
 
-\---
+Estos son los endpoints que debería consumir el cliente.
 
+### Registrar Préstamo
 
-
-\## Loans Endpoints Through Library Service
-
-
-
-These are the endpoints that the client should use.
-
-
-
-\### Register Loan
-
-
-
-Requires authentication.
-
-
+Requiere autenticación.
 
 ```http
-
 POST /loans
-
 ```
 
-
-
-Request as normal user:
-
-
+Request como usuario normal:
 
 ```json
-
 {
-
-&#x20; "bookId": "117f2aaf-61ab-4b49-b34a-7b331f6947a8"
-
+  "bookId": "117f2aaf-61ab-4b49-b34a-7b331f6947a8"
 }
-
 ```
 
-
-
-Request as admin for another user:
-
-
+Request como admin para otro usuario:
 
 ```json
-
 {
-
-&#x20; "userId": "81b8f134-ba1f-42cb-a834-859b9ac23f09",
-
-&#x20; "bookId": "117f2aaf-61ab-4b49-b34a-7b331f6947a8"
-
+  "userId": "81b8f134-ba1f-42cb-a834-859b9ac23f09",
+  "bookId": "117f2aaf-61ab-4b49-b34a-7b331f6947a8"
 }
-
 ```
-
-
 
 Response:
 
-
-
 ```json
-
 {
-
-&#x20; "id": "loan-uuid",
-
-&#x20; "userId": "81b8f134-ba1f-42cb-a834-859b9ac23f09",
-
-&#x20; "bookId": "117f2aaf-61ab-4b49-b34a-7b331f6947a8",
-
-&#x20; "status": "ACTIVE",
-
-&#x20; "loanDate": "2026-06-17T02:08:12.358975Z",
-
-&#x20; "createdAt": "2026-06-17T02:08:12.358975Z",
-
-&#x20; "updatedAt": "2026-06-17T02:08:12.358975Z"
-
+  "id": "loan-uuid",
+  "userId": "81b8f134-ba1f-42cb-a834-859b9ac23f09",
+  "bookId": "117f2aaf-61ab-4b49-b34a-7b331f6947a8",
+  "status": "ACTIVE",
+  "loanDate": "2026-06-17T02:08:12.358975Z",
+  "createdAt": "2026-06-17T02:08:12.358975Z",
+  "updatedAt": "2026-06-17T02:08:12.358975Z"
 }
-
 ```
 
-
-
-PowerShell:
-
-
+Ejemplo:
 
 ```powershell
-
 $userResponse = Invoke-RestMethod `
-
-&#x20; -Uri "http://localhost:3000/auth/login" `
-
-&#x20; -Method POST `
-
-&#x20; -ContentType "application/json" `
-
-&#x20; -Body '{
-
-&#x20;   "email": "user@test.com",
-
-&#x20;   "password": "123456"
-
-&#x20; }'
-
-
+  -Uri "http://localhost:3000/auth/login" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body '{
+    "email": "user@test.com",
+    "password": "123456"
+  }'
 
 $userToken = $userResponse.accessToken
 
-
-
 $loan = Invoke-RestMethod `
-
-&#x20; -Uri "http://localhost:3000/loans" `
-
-&#x20; -Method POST `
-
-&#x20; -ContentType "application/json" `
-
-&#x20; -Headers @{ Authorization = "Bearer $userToken" } `
-
-&#x20; -Body '{
-
-&#x20;   "bookId": "117f2aaf-61ab-4b49-b34a-7b331f6947a8"
-
-&#x20; }'
-
-
+  -Uri "http://localhost:3000/loans" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Headers @{ Authorization = "Bearer $userToken" } `
+  -Body '{
+    "bookId": "117f2aaf-61ab-4b49-b34a-7b331f6947a8"
+  }'
 
 $loan
-
 ```
 
+### Devolver Préstamo
 
-
-\---
-
-
-
-\### Return Loan
-
-
-
-Requires authentication.
-
-
+Requiere autenticación.
 
 ```http
-
 POST /loans/:id/return
-
 ```
 
-
-
-PowerShell:
-
-
+Ejemplo:
 
 ```powershell
-
 Invoke-RestMethod `
-
-&#x20; -Uri "http://localhost:3000/loans/$($loan.id)/return" `
-
-&#x20; -Method POST `
-
-&#x20; -Headers @{ Authorization = "Bearer $userToken" }
-
+  -Uri "http://localhost:3000/loans/$($loan.id)/return" `
+  -Method POST `
+  -Headers @{ Authorization = "Bearer $userToken" }
 ```
-
-
 
 Response:
 
-
-
 ```json
-
 {
-
-&#x20; "id": "loan-uuid",
-
-&#x20; "userId": "81b8f134-ba1f-42cb-a834-859b9ac23f09",
-
-&#x20; "bookId": "117f2aaf-61ab-4b49-b34a-7b331f6947a8",
-
-&#x20; "status": "RETURNED",
-
-&#x20; "loanDate": "2026-06-17T02:08:12.358975Z",
-
-&#x20; "returnDate": "2026-06-17T02:20:00.000000Z",
-
-&#x20; "createdAt": "2026-06-17T02:08:12.358975Z",
-
-&#x20; "updatedAt": "2026-06-17T02:20:00.000000Z"
-
+  "id": "loan-uuid",
+  "userId": "81b8f134-ba1f-42cb-a834-859b9ac23f09",
+  "bookId": "117f2aaf-61ab-4b49-b34a-7b331f6947a8",
+  "status": "RETURNED",
+  "loanDate": "2026-06-17T02:08:12.358975Z",
+  "returnDate": "2026-06-17T02:20:00.000000Z",
+  "createdAt": "2026-06-17T02:08:12.358975Z",
+  "updatedAt": "2026-06-17T02:20:00.000000Z"
 }
-
 ```
 
+### Listar Mis Préstamos Activos
 
-
-\---
-
-
-
-\### List My Active Loans
-
-
-
-Requires authentication.
-
-
+Requiere autenticación.
 
 ```http
-
 GET /loans/me/active
-
 ```
 
-
-
-PowerShell:
-
-
+Ejemplo:
 
 ```powershell
-
 Invoke-RestMethod `
-
-&#x20; -Uri "http://localhost:3000/loans/me/active" `
-
-&#x20; -Method GET `
-
-&#x20; -Headers @{ Authorization = "Bearer $userToken" }
-
+  -Uri "http://localhost:3000/loans/me/active" `
+  -Method GET `
+  -Headers @{ Authorization = "Bearer $userToken" }
 ```
 
+### Listar Histórico de Préstamos
 
-
-\---
-
-
-
-\### List Loan History
-
-
-
-Requires role: `ADMIN`.
-
-
+Requiere rol: `ADMIN`.
 
 ```http
-
 GET /loans/history
-
 ```
 
-
-
-PowerShell:
-
-
+Ejemplo:
 
 ```powershell
-
 Invoke-RestMethod `
-
-&#x20; -Uri "http://localhost:3000/loans/history" `
-
-&#x20; -Method GET `
-
-&#x20; -Headers @{ Authorization = "Bearer $adminToken" }
-
+  -Uri "http://localhost:3000/loans/history" `
+  -Method GET `
+  -Headers @{ Authorization = "Bearer $adminToken" }
 ```
 
-
-
-If a normal user tries to access this endpoint:
-
-
+Si un usuario normal intenta acceder:
 
 ```json
-
 {
-
-&#x20; "message": "Insufficient permissions",
-
-&#x20; "error": "Forbidden",
-
-&#x20; "statusCode": 403
-
+  "message": "Insufficient permissions",
+  "error": "Forbidden",
+  "statusCode": 403
 }
-
 ```
 
+---
 
+## Endpoints Internos de `library-service`
 
-\---
+Estos endpoints son utilizados internamente por `loans-service`.
 
-
-
-\## Internal Library Endpoints
-
-
-
-These endpoints are used internally by `loans-service`.
-
-
-
-They require:
-
-
+Requieren el header:
 
 ```http
-
-x-internal-api-key: local\_internal\_key
-
+x-internal-api-key: local_internal_key
 ```
 
-
-
-\### Get Internal Book
-
-
+### Obtener Libro Interno
 
 ```http
-
 GET /internal/books/:id
-
 ```
-
-
 
 Response:
 
-
-
 ```json
-
 {
-
-&#x20; "id": "117f2aaf-61ab-4b49-b34a-7b331f6947a8",
-
-&#x20; "title": "Clean Code",
-
-&#x20; "author": "Robert C. Martin",
-
-&#x20; "isbn": "9780132350884",
-
-&#x20; "year": 2008,
-
-&#x20; "genre": "Software Engineering",
-
-&#x20; "totalCopies": 5,
-
-&#x20; "availableCopies": 5,
-
-&#x20; "isAvailable": true
-
+  "id": "117f2aaf-61ab-4b49-b34a-7b331f6947a8",
+  "title": "Clean Code",
+  "author": "Robert C. Martin",
+  "isbn": "9780132350884",
+  "year": 2008,
+  "genre": "Software Engineering",
+  "totalCopies": 5,
+  "availableCopies": 5,
+  "isAvailable": true
 }
-
 ```
 
-
-
-\---
-
-
-
-\### Reserve Book Copy
-
-
+### Reservar Copia de Libro
 
 ```http
-
 POST /internal/books/:id/reserve
-
 ```
 
+Disminuye `availableCopies` en 1 si hay copias disponibles.
 
-
-This decreases `availableCopies` by 1 if there are available copies.
-
-
-
-\---
-
-
-
-\### Release Book Copy
-
-
+### Liberar Copia de Libro
 
 ```http
-
 POST /internal/books/:id/release
-
 ```
 
+Aumenta `availableCopies` en 1 si existen copias prestadas.
 
+---
 
-This increases `availableCopies` by 1 if the book has borrowed copies.
+## Endpoints Directos de `loans-service`
 
-
-
-\---
-
-
-
-\## Direct Loans Service Endpoints
-
-
-
-The `loans-service` exposes the following endpoints internally.
-
-
+`loans-service` expone endpoints en el puerto `8080`.
 
 Base URL:
 
-
-
 ```text
-
 http://localhost:8080
-
 ```
 
-
-
-\### Health
-
-
+### Health
 
 ```http
-
 GET /health
-
 ```
-
-
 
 Response:
 
-
-
 ```json
-
 {
-
-&#x20; "status": "ok",
-
-&#x20; "service": "loans-service",
-
-&#x20; "database": "ok"
-
+  "status": "ok",
+  "service": "loans-service",
+  "database": "ok"
 }
-
 ```
 
-
-
-\---
-
-
-
-\### Register Loan
-
-
+### Registrar Préstamo
 
 ```http
-
 POST /loans
-
 ```
-
-
 
 Request:
 
-
-
 ```json
-
 {
-
-&#x20; "userId": "81b8f134-ba1f-42cb-a834-859b9ac23f09",
-
-&#x20; "bookId": "117f2aaf-61ab-4b49-b34a-7b331f6947a8"
-
+  "userId": "81b8f134-ba1f-42cb-a834-859b9ac23f09",
+  "bookId": "117f2aaf-61ab-4b49-b34a-7b331f6947a8"
 }
-
 ```
-
-
 
 Response:
 
-
-
 ```json
-
 {
-
-&#x20; "id": "loan-uuid",
-
-&#x20; "userId": "81b8f134-ba1f-42cb-a834-859b9ac23f09",
-
-&#x20; "bookId": "117f2aaf-61ab-4b49-b34a-7b331f6947a8",
-
-&#x20; "status": "ACTIVE"
-
+  "id": "loan-uuid",
+  "userId": "81b8f134-ba1f-42cb-a834-859b9ac23f09",
+  "bookId": "117f2aaf-61ab-4b49-b34a-7b331f6947a8",
+  "status": "ACTIVE"
 }
-
 ```
 
-
-
-\---
-
-
-
-\### Return Loan
-
-
+### Devolver Préstamo
 
 ```http
-
 POST /loans/{id}/return
-
 ```
 
-
-
-\---
-
-
-
-\### List Active Loans by User
-
-
+### Listar Préstamos Activos por Usuario
 
 ```http
-
 GET /loans/users/{userId}/active
-
 ```
 
-
-
-\---
-
-
-
-\### List History
-
-
+### Listar Histórico
 
 ```http
-
 GET /loans/history
-
 ```
 
+---
 
+# Flujo Principal
 
-\---
+## Prueba manual completa con PowerShell
 
-
-
-\# Main Flow
-
-
-
-\## Full manual test with PowerShell
-
-
-
-\### 1. Login as normal user
-
-
+### 1. Login como usuario normal
 
 ```powershell
-
 $userResponse = Invoke-RestMethod `
-
-&#x20; -Uri "http://localhost:3000/auth/login" `
-
-&#x20; -Method POST `
-
-&#x20; -ContentType "application/json" `
-
-&#x20; -Body '{
-
-&#x20;   "email": "user@test.com",
-
-&#x20;   "password": "123456"
-
-&#x20; }'
-
-
+  -Uri "http://localhost:3000/auth/login" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body '{
+    "email": "user@test.com",
+    "password": "123456"
+  }'
 
 $userToken = $userResponse.accessToken
-
 ```
 
-
-
-\### 2. List books
-
-
+### 2. Listar libros
 
 ```powershell
-
 Invoke-RestMethod `
-
-&#x20; -Uri "http://localhost:3000/books" `
-
-&#x20; -Method GET `
-
-&#x20; -Headers @{ Authorization = "Bearer $userToken" }
-
+  -Uri "http://localhost:3000/books" `
+  -Method GET `
+  -Headers @{ Authorization = "Bearer $userToken" }
 ```
 
-
-
-\### 3. Create a loan
-
-
+### 3. Crear préstamo
 
 ```powershell
-
 $loan = Invoke-RestMethod `
-
-&#x20; -Uri "http://localhost:3000/loans" `
-
-&#x20; -Method POST `
-
-&#x20; -ContentType "application/json" `
-
-&#x20; -Headers @{ Authorization = "Bearer $userToken" } `
-
-&#x20; -Body '{
-
-&#x20;   "bookId": "117f2aaf-61ab-4b49-b34a-7b331f6947a8"
-
-&#x20; }'
-
-
+  -Uri "http://localhost:3000/loans" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Headers @{ Authorization = "Bearer $userToken" } `
+  -Body '{
+    "bookId": "117f2aaf-61ab-4b49-b34a-7b331f6947a8"
+  }'
 
 $loan
-
 ```
 
-
-
-\### 4. List active loans
-
-
+### 4. Listar préstamos activos
 
 ```powershell
-
 Invoke-RestMethod `
-
-&#x20; -Uri "http://localhost:3000/loans/me/active" `
-
-&#x20; -Method GET `
-
-&#x20; -Headers @{ Authorization = "Bearer $userToken" }
-
+  -Uri "http://localhost:3000/loans/me/active" `
+  -Method GET `
+  -Headers @{ Authorization = "Bearer $userToken" }
 ```
 
-
-
-\### 5. Return the loan
-
-
+### 5. Devolver préstamo
 
 ```powershell
-
 Invoke-RestMethod `
-
-&#x20; -Uri "http://localhost:3000/loans/$($loan.id)/return" `
-
-&#x20; -Method POST `
-
-&#x20; -Headers @{ Authorization = "Bearer $userToken" }
-
+  -Uri "http://localhost:3000/loans/$($loan.id)/return" `
+  -Method POST `
+  -Headers @{ Authorization = "Bearer $userToken" }
 ```
 
-
-
-\### 6. Login as admin
-
-
+### 6. Login como admin
 
 ```powershell
-
 $adminResponse = Invoke-RestMethod `
-
-&#x20; -Uri "http://localhost:3000/auth/login" `
-
-&#x20; -Method POST `
-
-&#x20; -ContentType "application/json" `
-
-&#x20; -Body '{
-
-&#x20;   "email": "admin@test.com",
-
-&#x20;   "password": "123456"
-
-&#x20; }'
-
-
+  -Uri "http://localhost:3000/auth/login" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body '{
+    "email": "admin@test.com",
+    "password": "123456"
+  }'
 
 $adminToken = $adminResponse.accessToken
-
 ```
 
-
-
-\### 7. List history as admin
-
-
+### 7. Consultar histórico como admin
 
 ```powershell
-
 Invoke-RestMethod `
-
-&#x20; -Uri "http://localhost:3000/loans/history" `
-
-&#x20; -Method GET `
-
-&#x20; -Headers @{ Authorization = "Bearer $adminToken" }
-
+  -Uri "http://localhost:3000/loans/history" `
+  -Method GET `
+  -Headers @{ Authorization = "Bearer $adminToken" }
 ```
 
+---
 
+# Status Codes
 
-\---
+| Status | Significado |
+|---:|---|
+| `200` | Solicitud exitosa |
+| `201` | Recurso creado |
+| `400` | Solicitud inválida |
+| `401` | Autenticación ausente o inválida |
+| `403` | Permisos insuficientes |
+| `404` | Recurso no encontrado |
+| `409` | Conflicto, por ejemplo préstamo activo duplicado |
+| `502` | Error de comunicación con otro servicio |
+| `500` | Error inesperado del servidor |
 
+---
 
+# Pruebas
 
-\# Status Codes
+## Servicio A: `library-service`
 
+Las pruebas están implementadas con Jest.
 
+Actualmente cubren:
 
-Common status codes used by the API:
+- Crear un libro con `availableCopies` igual a `totalCopies`.
+- Listar libros con filtros y paginación.
+- Lanzar `NotFoundException` cuando el libro no existe.
+- Reservar una copia disponible.
+- Lanzar `BadRequestException` cuando no hay copias disponibles.
 
-
-
-| Status | Meaning                                      |
-
-| -----: | -------------------------------------------- |
-
-|  `200` | Successful request                           |
-
-|  `201` | Resource created                             |
-
-|  `400` | Invalid request                              |
-
-|  `401` | Missing or invalid authentication            |
-
-|  `403` | Insufficient permissions                     |
-
-|  `404` | Resource not found                           |
-
-|  `409` | Conflict, for example duplicated active loan |
-
-|  `502` | Upstream service communication error         |
-
-|  `500` | Unexpected server error                      |
-
-
-
-\---
-
-
-
-\# Tests
-
-
-
-\## Service A: library-service
-
-
-
-Tests are implemented with Jest.
-
-
-
-Current unit tests cover:
-
-
-
-\* Creating a book with `availableCopies` equal to `totalCopies`.
-
-\* Listing books with filters and pagination.
-
-\* Throwing `NotFoundException` when a book does not exist.
-
-\* Reserving one available copy.
-
-\* Throwing `BadRequestException` when there are no available copies.
-
-
-
-Run tests:
-
-
+Ejecutar pruebas:
 
 ```powershell
-
 cd library-service
-
 npm test -- books.service.spec.ts
-
 ```
 
-
-
-Expected result:
-
-
+Resultado esperado:
 
 ```text
-
 PASS src/books/books.service.spec.ts
-
 Tests: 5 passed
-
 ```
 
+## Servicio B: `loans-service`
 
+Las pruebas están implementadas con el paquete estándar de testing de Go.
 
-\---
+Actualmente cubren:
 
+- Registrar un préstamo y reservar el libro.
+- Evitar préstamos activos duplicados.
+- Liberar el libro como compensación cuando falla la creación del préstamo.
+- Devolver un préstamo y liberar el libro.
 
-
-\## Service B: loans-service
-
-
-
-Tests are implemented with Go testing package.
-
-
-
-Current unit tests cover:
-
-
-
-\* Registering a loan and reserving the book.
-
-\* Preventing duplicated active loans.
-
-\* Releasing the book as compensation when loan creation fails.
-
-\* Returning a loan and releasing the book.
-
-
-
-Run tests:
-
-
+Ejecutar pruebas:
 
 ```powershell
-
 cd loans-service
-
 go test ./...
-
 ```
 
-
-
-Expected result:
-
-
+Resultado esperado:
 
 ```text
-
 ok      github.com/jdeleonchang/library-technical-test/loans-service/internal/loans
-
 ```
 
+---
 
+# Comandos Útiles
 
-\---
-
-
-
-\# Useful Commands
-
-
-
-\## Start all services
-
-
+## Levantar todos los servicios
 
 ```powershell
-
 docker compose up --build
-
 ```
 
-
-
-\## Stop all services
-
-
+## Detener todos los servicios
 
 ```powershell
-
 docker compose down
-
 ```
 
+## Detener servicios y eliminar volúmenes
 
-
-\## Stop all services and remove volumes
-
-
-
-Use this when you want to reset databases completely.
-
-
+Usar cuando se quiera reiniciar completamente las bases de datos.
 
 ```powershell
-
 docker compose down -v
-
 ```
 
-
-
-\## Rebuild without cache
-
-
+## Rebuild sin caché
 
 ```powershell
-
 docker compose build --no-cache
-
 docker compose up
-
 ```
 
-
-
-\## Run only databases
-
-
+## Levantar solo las bases de datos
 
 ```powershell
-
 docker compose up -d library-db loans-db
-
 ```
 
-
-
-\## Run library-service locally
-
-
+## Ejecutar `library-service` localmente
 
 ```powershell
-
 cd library-service
-
 npm install
-
 npx prisma migrate dev
-
 npm run seed
-
 npm run start:dev
-
 ```
 
-
-
-\## Run loans-service locally
-
-
+## Ejecutar `loans-service` localmente
 
 ```powershell
-
 cd loans-service
-
 go mod tidy
-
 go run ./cmd/server
-
 ```
 
+---
 
+# Solución de Problemas
 
-\---
+## Prisma no puede conectarse a `::1:5433`
 
+Cuando se ejecuta localmente en Windows, puede ocurrir que Prisma intente conectarse usando IPv6.
 
-
-\# Troubleshooting
-
-
-
-\## Prisma cannot reach database at `::1:5433`
-
-
-
-Use `127.0.0.1` instead of `localhost` when running locally:
-
-
+Solución:
 
 ```powershell
-
-$env:DATABASE\_URL="postgresql://postgres:postgres@127.0.0.1:5433/library\_db?schema=public"
-
+$env:DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:5433/library_db?schema=public"
 npm run seed
-
 ```
 
+## Prisma generate falla durante Docker build
 
+El Dockerfile define `DATABASE_URL` durante el build para que Prisma pueda generar el cliente correctamente.
 
-\## Prisma generate fails during Docker build
+## Error `Cannot find module /app/dist/main`
 
-
-
-The Dockerfile defines `DATABASE\_URL` during build so Prisma can generate the client.
-
-
-
-\## `Cannot find module /app/dist/main`
-
-
-
-The NestJS build output is under:
-
-
+El build de NestJS genera la salida en:
 
 ```text
-
 dist/src/main.js
-
 ```
 
-
-
-Therefore the Dockerfile starts the app with:
-
-
+Por eso el Dockerfile inicia la aplicación con:
 
 ```text
-
 node dist/src/main.js
-
 ```
 
+## Go no encuentra las migraciones
 
-
-\## Go service cannot find migrations
-
-
-
-The Go Dockerfile copies migrations into the final image:
-
-
+El Dockerfile de Go copia las migraciones a la imagen final:
 
 ```dockerfile
-
 COPY --from=builder /app/migrations ./migrations
-
 ```
 
+Sin esto, el servicio Go fallaría al iniciar porque ejecuta `migrations/001_init.sql`.
 
+---
 
-Without this, the Go service would fail during startup because it runs `migrations/001\_init.sql`.
+# Trade-offs
 
+## No se implementó transacción distribuida
 
+El sistema usa dos bases de datos independientes.
 
-\---
+En lugar de una transacción distribuida, se usa una estrategia de compensación:
 
+1. `loans-service` reserva el libro por medio de `library-service`.
+2. Luego crea el préstamo en `loans-db`.
+3. Si la creación del préstamo falla, llama a `release` en `library-service`.
 
+Esto mantiene el diseño más simple y cercano a un enfoque de microservicios.
 
-\# Trade-offs
+## API key interna en lugar de JWT entre servicios
 
+Los endpoints internos usan `x-internal-api-key`.
 
+En un sistema productivo podría complementarse o reemplazarse por:
 
-\## No distributed transaction
+- mTLS,
+- JWT interno entre servicios,
+- API Gateway,
+- redes privadas,
+- rotación de secretos.
 
+## Seed de datos demo
 
+El seed existe para facilitar la evaluación del proyecto.
 
-The system uses two independent databases. A distributed transaction was not implemented.
+Crea usuarios y un libro base para que el evaluador pueda probar el sistema inmediatamente después de ejecutar Docker Compose.
 
+## Acceso directo a `loans-service`
 
+`loans-service` expone endpoints en el puerto `8080` para pruebas y validación.
 
-Instead, a compensation approach is used:
+En un ambiente productivo, este servicio podría ser privado y accesible únicamente desde `library-service`.
 
+---
 
+# Checklist de Entrega
 
-1\. `loans-service` reserves a book through `library-service`.
+- [x] `library-service` implementado con NestJS.
+- [x] `loans-service` implementado con Go.
+- [x] Base PostgreSQL para biblioteca.
+- [x] Base PostgreSQL para préstamos.
+- [x] Docker Compose funcionando.
+- [x] Autenticación JWT.
+- [x] Roles ADMIN y USER.
+- [x] CRUD de libros.
+- [x] CRUD de usuarios.
+- [x] Filtros y paginación de libros.
+- [x] Registro de préstamos.
+- [x] Devolución de préstamos.
+- [x] Préstamos activos por usuario.
+- [x] Histórico de préstamos.
+- [x] Reserva y liberación interna de libros.
+- [x] Seed automático.
+- [x] Tests unitarios para Servicio A.
+- [x] Tests unitarios para Servicio B.
+- [x] Documentación en README.
 
-2\. Then it creates the loan in `loans-db`.
+---
 
-3\. If loan creation fails, it calls `release` in `library-service`.
-
-
-
-This keeps the design simpler and closer to microservice-style ownership.
-
-
-
-\## Internal API key instead of service-to-service JWT
-
-
-
-Internal endpoints are protected with `x-internal-api-key`.
-
-
-
-For a production system, this could be replaced or complemented by:
-
-
-
-\* mTLS,
-
-\* internal JWT,
-
-\* API gateway policies,
-
-\* private networking,
-
-\* rotated secrets.
-
-
-
-\## Basic seed data
-
-
-
-The seed is designed to make evaluation easier. It creates stable users and a stable demo book.
-
-
-
-\## Direct access to loans-service
-
-
-
-`loans-service` exposes endpoints on port `8080` for testing and verification. In a production setup, it could be private and only accessible from `library-service`.
-
-
-
-\---
-
-
-
-
-
-\# Author
-
-
+# Autor
 
 José De León
 
+Repositorio:
 
-
-
-
+```text
+https://github.com/ZeroJChang/GM_PT_Jdeleon
+```
