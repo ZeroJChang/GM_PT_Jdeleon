@@ -1293,27 +1293,6 @@ En un ambiente productivo, este servicio podría ser privado y accesible únicam
 
 ---
 
-# Checklist de Entrega
-
-- [x] `library-service` implementado con NestJS.
-- [x] `loans-service` implementado con Go.
-- [x] Base PostgreSQL para biblioteca.
-- [x] Base PostgreSQL para préstamos.
-- [x] Docker Compose funcionando.
-- [x] Autenticación JWT.
-- [x] Roles ADMIN y USER.
-- [x] CRUD de libros.
-- [x] CRUD de usuarios.
-- [x] Filtros y paginación de libros.
-- [x] Registro de préstamos.
-- [x] Devolución de préstamos.
-- [x] Préstamos activos por usuario.
-- [x] Histórico de préstamos.
-- [x] Reserva y liberación interna de libros.
-- [x] Seed automático.
-- [x] Tests unitarios para Servicio A.
-- [x] Tests unitarios para Servicio B.
-- [x] Documentación en README.
 
 ---
 
@@ -1321,8 +1300,5 @@ En un ambiente productivo, este servicio podría ser privado y accesible únicam
 
 José De León
 
-Repositorio:
 
-```text
-https://github.com/ZeroJChang/GM_PT_Jdeleon
-```
+
